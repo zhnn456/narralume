@@ -56,27 +56,6 @@ async function findMarkdownFiles(dir: string, showName: string = ""): Promise<Im
   return results;
 }
 
-function splitIntoChunks(content: string, maxChunkSize: number = 2000): string[] {
-  const chunks: string[] = [];
-  const paragraphs = content.split(/\n\n+/);
-  
-  let currentChunk = "";
-  for (const para of paragraphs) {
-    if ((currentChunk + para).length > maxChunkSize && currentChunk.length > 0) {
-      chunks.push(currentChunk.trim());
-      currentChunk = para;
-    } else {
-      currentChunk += (currentChunk ? "\n\n" : "") + para;
-    }
-  }
-  
-  if (currentChunk.trim().length > 0) {
-    chunks.push(currentChunk.trim());
-  }
-  
-  return chunks;
-}
-
 async function main() {
   console.log("=== Karl Knowledge Base 导入工具 ===");
   console.log(`知识库路径: ${KB_ROOT}`);
@@ -116,43 +95,59 @@ async function main() {
     const projectExists = db.prepare("SELECT id FROM projects WHERE id = ?").get(projectId);
     
     if (!projectExists) {
+      const now = new Date().toISOString();
       db.prepare(`
-        INSERT INTO projects (id, title, description, created_at, updated_at)
-        VALUES (?, ?, ?, datetime('now'), datetime('now'))
-      `).run(projectId, "Karl Detective Knowledge Base", "神探卡尔探案集 - 侦探推理知识库");
+        INSERT INTO projects (id, title, premise, language, phase, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        projectId,
+        "Karl Detective Knowledge Base",
+        "神探卡尔探案集 - 侦探推理知识库",
+        "zh-CN",
+        "foundation",
+        now,
+        now
+      );
       console.log("  创建知识库项目");
     } else {
       console.log("  知识库项目已存在");
     }
   } catch (e) {
-    console.warn("  projects 表可能不存在，继续尝试导入...");
+    console.warn(`  创建项目失败: ${e}`);
   }
   
   // 4. 导入文件为文档和文本片段
   console.log("\n[4/4] 导入文件...");
   
   let importedDocs = 0;
-  let importedSegments = 0;
   
   for (const file of allFiles) {
-    // 创建文档
     const docId = `doc-${file.show}-${file.title.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`;
+    const now = new Date().toISOString();
     
     try {
       const docExists = db.prepare("SELECT id FROM documents WHERE id = ?").get(docId);
       
       if (!docExists) {
+        // 插入文档
         db.prepare(`
           INSERT INTO documents (id, project_id, kind, title, created_at, updated_at)
-          VALUES (?, ?, 'reference', ?, datetime('now'), datetime('now'))
-        `).run(docId, projectId, `${file.show} - ${file.title}`);
+          VALUES (?, ?, 'reference', ?, ?, ?)
+        `).run(docId, projectId, `${file.show} - ${file.title}`, now, now);
         
         // 创建文档版本
-        const versionId = `ver-${docId}`;
+        const versionId = `ver-${docId}-v1`;
         db.prepare(`
-          INSERT INTO document_versions (id, document_id, content, source, created_at)
-          VALUES (?, ?, ?, 'karl-kb-import', datetime('now'))
-        `).run(versionId, docId, file.content);
+          INSERT INTO document_versions (id, document_id, content, content_hash, source, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          versionId,
+          docId,
+          file.content,
+          `hash-${docId}-v1`,
+          "karl-kb-import",
+          now
+        );
         
         // 更新文档当前版本
         db.prepare(`
@@ -161,50 +156,18 @@ async function main() {
         
         importedDocs++;
       }
-      
-      // 分割为片段并导入到 text_segments
-      const chunks = splitIntoChunks(file.content);
-      
-      chunks.forEach((chunk, index) => {
-        const segmentId = `seg-${docId}-${index}`;
-        
-        try {
-          const segExists = db.prepare("SELECT id FROM text_segments WHERE id = ?").get(segmentId);
-          
-          if (!segExists) {
-            db.prepare(`
-              INSERT INTO text_segments (
-                id, project_id, source_type, source_id, title, content, authority,
-                metadata_json, created_at, updated_at
-              ) VALUES (?, ?, 'reference', ?, ?, ?, 'reference', ?, datetime('now'), datetime('now'))
-            `).run(
-              segmentId,
-              projectId,
-              docId,
-              `${file.show} - ${file.title} (片段 ${index + 1})`,
-              chunk,
-              JSON.stringify({ show: file.show, episode: file.title, chunkIndex: index })
-            );
-            
-            importedSegments++;
-          }
-        } catch (e) {
-          // text_segments 表可能不存在，跳过
-        }
-      });
     } catch (e) {
-      // documents 表可能不存在，跳过这个文件
-      console.warn(`  跳过 ${file.title}: 表结构不匹配`);
+      console.warn(`  跳过 ${file.title}: ${(e as Error).message.substring(0, 80)}`);
     }
   }
   
   console.log(`  导入 ${importedDocs} 个文档`);
-  console.log(`  导入 ${importedSegments} 个文本片段`);
   
   db.close();
   
   console.log("\n=== 导入完成！===");
-  console.log("\n知识库现在可以在创作时通过 FTS 全文搜索自动检索了。");
+  console.log("\n知识库现在可以在创作时通过全文搜索自动检索了。");
+  console.log("在 AI 助手中输入案件需求时，系统会自动检索相关的诡计、手法和类似案件。");
 }
 
 main().catch(console.error);
